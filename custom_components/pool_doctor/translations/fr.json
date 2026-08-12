@@ -1,0 +1,53 @@
+{
+  "title": "Pool Doctor",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connecter Pool Doctor",
+        "description": "Générez un code dans Pool Doctor > Ma piscine > Home Assistant, puis saisissez-le ici.",
+        "data": {
+          "pairing_code": "Code d'association",
+          "name": "Nom de cette installation",
+          "endpoint": "Adresse Pool Doctor Connect"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Code invalide, expiré ou service indisponible."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Associer les entités Home Assistant",
+        "description": "Tous les champs sont facultatifs. Pool Doctor reste en lecture seule dans cette version.",
+        "data": {
+          "temperature_entity": "Température eau",
+          "ph_entity": "pH",
+          "orp_entity": "ORP",
+          "chlorine_entity": "Chlore libre",
+          "tac_entity": "TAC",
+          "cya_entity": "Stabilisant",
+          "salt_entity": "Sel",
+          "pump_entity": "État pompe",
+          "pump_power_entity": "Puissance pompe",
+          "filtration_hours_entity": "Durée filtration aujourd'hui"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "score": { "name": "Score" },
+      "temperature": { "name": "Température eau" },
+      "ph": { "name": "pH" },
+      "orp": { "name": "ORP" },
+      "salt": { "name": "Sel" },
+      "chlorine": { "name": "Chlore libre" },
+      "filtration_today": { "name": "Filtration aujourd'hui" },
+      "filtration_target": { "name": "Filtration recommandée" },
+      "pump_power": { "name": "Puissance pompe" },
+      "next_action": { "name": "Action prioritaire" }
+    }
+  }
+}
