@@ -1,0 +1,53 @@
+{
+  "title": "Pool Doctor",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Pool Doctor",
+        "description": "Generate a code in Pool Doctor > My pool > Home Assistant, then enter it here.",
+        "data": {
+          "pairing_code": "Pairing code",
+          "name": "Installation name",
+          "endpoint": "Pool Doctor Connect endpoint"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Invalid or expired code, or service unavailable."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Map Home Assistant entities",
+        "description": "All fields are optional. Pool Doctor remains read-only in this version.",
+        "data": {
+          "temperature_entity": "Water temperature",
+          "ph_entity": "pH",
+          "orp_entity": "ORP",
+          "chlorine_entity": "Free chlorine",
+          "tac_entity": "Total alkalinity",
+          "cya_entity": "Stabilizer",
+          "salt_entity": "Salt",
+          "pump_entity": "Pump state",
+          "pump_power_entity": "Pump power",
+          "filtration_hours_entity": "Filtration duration today"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "score": { "name": "Score" },
+      "temperature": { "name": "Water temperature" },
+      "ph": { "name": "pH" },
+      "orp": { "name": "ORP" },
+      "salt": { "name": "Salt" },
+      "chlorine": { "name": "Free chlorine" },
+      "filtration_today": { "name": "Filtration today" },
+      "filtration_target": { "name": "Recommended filtration" },
+      "pump_power": { "name": "Pump power" },
+      "next_action": { "name": "Priority action" }
+    }
+  }
+}
