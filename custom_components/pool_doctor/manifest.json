@@ -1,0 +1,12 @@
+{
+  "domain": "pool_doctor",
+  "name": "Pool Doctor",
+  "version": "0.20.1",
+  "documentation": "https://github.com/loic38960/Pool-Doctor-Home-Assistant",
+  "issue_tracker": "https://github.com/loic38960/Pool-Doctor-Home-Assistant/issues",
+  "codeowners": ["@loic38960"],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "requirements": []
+}
