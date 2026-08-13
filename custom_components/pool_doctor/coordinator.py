@@ -43,10 +43,38 @@ _WATER_KEYS = (
     "saltGL",
     "orpMv",
 )
+_CHEMISTRY_KEYS = (
+    "ph",
+    "freeChlorinePpm",
+    "tacPpm",
+    "cyaPpm",
+    "saltGL",
+    "orpMv",
+)
 _ANALYSIS_WINDOW = timedelta(minutes=30)
 _ANALYSIS_MIN_SPAN = timedelta(minutes=25)
 _ANALYSIS_MIN_SAMPLES = 10
 _ANALYSIS_BUFFER = timedelta(minutes=90)
+_CHEMISTRY_HIDDEN_WINDOW = timedelta(minutes=10)
+_UNSTABLE_WINDOW = timedelta(minutes=10)
+_STUCK_WINDOW = timedelta(minutes=60)
+_STUCK_MIN_SAMPLES = 30
+_UNSTABLE_RANGES = {
+    "ph": 0.25,
+    "freeChlorinePpm": 1.0,
+    "tacPpm": 35.0,
+    "cyaPpm": 25.0,
+    "saltGL": 1.0,
+    "orpMv": 120.0,
+}
+_STUCK_RANGES = {
+    "ph": 0.001,
+    "freeChlorinePpm": 0.005,
+    "tacPpm": 0.05,
+    "cyaPpm": 0.05,
+    "saltGL": 0.005,
+    "orpMv": 0.5,
+}
 
 
 def _duration_unit_multiplier_minutes(unit: Any) -> float | None:
@@ -172,6 +200,13 @@ def _iso_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _finite_number(value: Any) -> float | None:
+    if not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 class PoolDoctorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
@@ -181,6 +216,7 @@ class PoolDoctorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry.data[CONF_TOKEN],
         )
         self._water_samples: deque[tuple[datetime, dict[str, float]]] = deque()
+        self._last_reliable_chemistry: dict[str, Any] | None = None
         super().__init__(
             hass,
             logger=__import__("logging").getLogger(__name__),
@@ -211,48 +247,155 @@ class PoolDoctorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 states[canonical_key] = value
         return states, mappings
 
-    def _attach_analysis_candidate(self, states: dict[str, Any]) -> None:
+    def _hide_chemistry(self, states: dict[str, Any]) -> None:
+        for key in _CHEMISTRY_KEYS:
+            states.pop(key, None)
+
+    def _diagnostics(self, now: datetime) -> dict[str, Any]:
+        unstable_cutoff = now - _UNSTABLE_WINDOW
+        stuck_cutoff = now - _STUCK_WINDOW
+        recent = [sample for sample in self._water_samples if sample[0] >= unstable_cutoff]
+        long_window = [sample for sample in self._water_samples if sample[0] >= stuck_cutoff]
+
+        diagnostics: dict[str, Any] = {}
+        for key in _CHEMISTRY_KEYS:
+            recent_values = [payload[key] for _, payload in recent if key in payload]
+            long_values = [payload[key] for _, payload in long_window if key in payload]
+            if len(recent_values) < 5 and len(long_values) < _STUCK_MIN_SAMPLES:
+                continue
+
+            state = "ok"
+            value_range: float | None = None
+            sample_count = len(recent_values)
+
+            if len(recent_values) >= 5:
+                recent_range = max(recent_values) - min(recent_values)
+                value_range = recent_range
+                if recent_range >= _UNSTABLE_RANGES[key]:
+                    state = "unstable"
+
+            if state == "ok" and len(long_values) >= _STUCK_MIN_SAMPLES:
+                long_range = max(long_values) - min(long_values)
+                if long_range <= _STUCK_RANGES[key]:
+                    state = "possibly_stuck"
+                    value_range = long_range
+                    sample_count = len(long_values)
+
+            diagnostics[key] = {
+                "state": state,
+                "sampleCount": sample_count,
+                "range": round(value_range or 0.0, 4),
+            }
+        return diagnostics
+
+    def _prepare_water_measurements(self, states: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
+        pump_on = states.get("pumpOn") is True
         pump_on_since = _iso_datetime(states.get("pumpOnSince"))
 
-        if states.get("pumpOn") is not True or pump_on_since is None:
+        if not pump_on or pump_on_since is None:
             self._water_samples.clear()
+            self._hide_chemistry(states)
+            states["waterMeasurementState"] = {
+                "stage": "pump_off" if states.get("pumpOn") is False else "pump_unknown",
+                "chemistryVisible": False,
+                "chemistryUsable": False,
+                "analysisAllowed": False,
+                "reason": "pump_off" if states.get("pumpOn") is False else "pump_unknown",
+            }
+            if self._last_reliable_chemistry:
+                states["lastReliableChemistry"] = dict(self._last_reliable_chemistry)
             return
 
         while self._water_samples and self._water_samples[0][0] < pump_on_since:
             self._water_samples.popleft()
 
-        water_values: dict[str, float] = {}
+        raw_water: dict[str, float] = {}
         for key in _WATER_KEYS:
-            value = states.get(key)
-            if isinstance(value, (int, float)) and math.isfinite(float(value)):
-                water_values[key] = float(value)
-
-        if water_values:
-            self._water_samples.append((now, water_values))
+            value = _finite_number(states.get(key))
+            if value is not None:
+                raw_water[key] = value
+        if raw_water:
+            self._water_samples.append((now, raw_water))
 
         buffer_cutoff = now - _ANALYSIS_BUFFER
         while self._water_samples and self._water_samples[0][0] < buffer_cutoff:
             self._water_samples.popleft()
 
-        if now - pump_on_since < _ANALYSIS_WINDOW:
+        elapsed = now - pump_on_since
+        elapsed_minutes = max(0, int(elapsed.total_seconds() // 60))
+        diagnostics = self._diagnostics(now)
+        if diagnostics:
+            states["sensorDiagnostics"] = diagnostics
+
+        if elapsed < _CHEMISTRY_HIDDEN_WINDOW:
+            self._hide_chemistry(states)
+            states["waterMeasurementState"] = {
+                "stage": "stabilizing_hidden",
+                "elapsedMinutes": elapsed_minutes,
+                "chemistryVisible": False,
+                "chemistryUsable": False,
+                "analysisAllowed": False,
+                "reason": "initial_stabilization",
+            }
+            if self._last_reliable_chemistry:
+                states["lastReliableChemistry"] = dict(self._last_reliable_chemistry)
             return
+
+        if elapsed < _ANALYSIS_WINDOW:
+            states["waterMeasurementState"] = {
+                "stage": "stabilizing_visible",
+                "elapsedMinutes": elapsed_minutes,
+                "chemistryVisible": True,
+                "chemistryUsable": False,
+                "analysisAllowed": False,
+                "reason": "stabilization",
+            }
+            if self._last_reliable_chemistry:
+                states["lastReliableChemistry"] = dict(self._last_reliable_chemistry)
+            return
+
+        states["waterMeasurementState"] = {
+            "stage": "reliable",
+            "elapsedMinutes": elapsed_minutes,
+            "chemistryVisible": True,
+            "chemistryUsable": True,
+            "analysisAllowed": True,
+            "reason": "circulation_stable",
+        }
 
         window_cutoff = now - _ANALYSIS_WINDOW
         samples = [sample for sample in self._water_samples if sample[0] >= window_cutoff]
         if len(samples) < _ANALYSIS_MIN_SAMPLES:
+            states["waterMeasurementState"]["analysisAllowed"] = False
+            states["waterMeasurementState"]["reason"] = "insufficient_samples"
             return
         if samples[-1][0] - samples[0][0] < _ANALYSIS_MIN_SPAN:
+            states["waterMeasurementState"]["analysisAllowed"] = False
+            states["waterMeasurementState"]["reason"] = "insufficient_span"
             return
 
         representative: dict[str, float] = {}
         for key in _WATER_KEYS:
             values = [payload[key] for _, payload in samples if key in payload]
-            if len(values) >= 3:
-                representative[key] = round(float(median(values)), 3)
+            if len(values) < 3:
+                continue
+            diagnostic_state = diagnostics.get(key, {}).get("state")
+            if diagnostic_state in ("unstable", "possibly_stuck"):
+                continue
+            representative[key] = round(float(median(values)), 3)
 
-        if not representative:
+        chemistry = {key: representative[key] for key in _CHEMISTRY_KEYS if key in representative}
+        if not chemistry:
+            states["waterMeasurementState"]["analysisAllowed"] = False
+            states["waterMeasurementState"]["reason"] = "no_reliable_chemistry"
             return
+
+        self._last_reliable_chemistry = {
+            "at": samples[-1][0].isoformat(),
+            "values": chemistry,
+        }
+        states["lastReliableChemistry"] = dict(self._last_reliable_chemistry)
 
         states["analysisCandidate"] = {
             "at": samples[-1][0].isoformat(),
@@ -265,7 +408,7 @@ class PoolDoctorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             states, mappings = self._mapped_states()
-            self._attach_analysis_candidate(states)
+            self._prepare_water_measurements(states)
             if states:
                 await self.api.ingest(states, mappings)
             return await self.api.snapshot()
